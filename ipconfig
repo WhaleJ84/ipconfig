@@ -5,55 +5,17 @@
 
 IPCIDR="([[:digit:]]{1,3}\.){3}[[:digit:]]{1,3}/[[:digit:]]{1,2}"
 # TODO: Ensure /etc/netplan is the correct dir for configs
-configfile=$(ls /etc/netplan/01-*.yaml)
-# Ensure there is a backup. Requires sudo privileges
-#[ ! -e $configfile.bak ] && backuprestore backup $configfile
-[ ! -e $configfile.bak ] && cp $configfile $configfile.bak
+netplan=$(ls /etc/netplan/01-*.yaml)
+resolve=$(ls /etc/systemd/resolved.conf)
 hostname=$(cat /etc/hostname)
+# Check for installed programs
+[ $(command -v NetworkManager 2>/dev/null) ] && networkmanager='true'
+[ $(command -v dmenu 2>/dev/null) ] && dmenu='true'
+[ $(command -v notify-send 2>/dev/null) ] && notifysend='true'
 
-getconnectedinterfaces(){
-    interfaces=$(ls /sys/class/net)
-}
-
-selectinterface(){
-    [ -z $interfaces ] && getconnectedinterfaces
-    echo 'AVAILABLE INTERFACES:'
-    echo "$interfaces"
-    read -p 'What interface do you want to configure? ' interface
-    [ $(echo $interface | grep -e "$interfaces") ] || selectinterface
-}
-
-getinterfaceinformation(){
-    [ -z $interface ] && selectinterface
-    renderer=$(grep renderer $configfile | awk '{print $2}')
-    dhcp4=$(grep dhcp4 $configfile | awk '{print $2}')
-    [ ! $dhcp4 ] && dhcp4='no'
-    ipv4=$(ip address show dev $interface | grep -e 'inet ' | sed -E 's|[^[:digit:]]*(([[:digit:]]{1,3}\.){3}[[:digit:]]{1,3}/[[:digit:]]{1,2}).*|\1|')
-    gateway4=$(ip route show dev $interface | grep -e 'default via' | sed -E 's/[^[:digit:]]*(([[:digit:]]{1,3}\.){3}[[:digit:]]{1,3}).*/\1/' | head -1)
-    nameserver4=$(grep -e 'nameserver' /etc/resolv.conf | cut -f2 -d' ')
-    domainname=$(egrep -e "^([[:digit:]]{1,3}\.){3}[[:digit:]]{1,3}[^[:alpha:]]*$hostname\.?([[:alpha:]])?" /etc/hosts | cut -f5 -d. | awk '{print $2}')
-    [ ! $domainname ] && domainname='not set'
-}
-
-printinterfaceinformation(){
-    [ $1 ] && interface=$1 && getinterfaceinformation $interface
-    [ -z $renderer $dhcp4 $ipv4 $gateway4 $nameserver $domainname ] 2>/dev/null && getinterfaceinformation
-    echo "Renderer: $renderer"
-    echo "DHCP: $dhcp4"
-    echo "IP: $ipv4"
-    echo "gateway: $gateway4"
-    echo "nameservers: $nameserver"
-    echo "domain: $domainname"
-}
-
-getconfigvalue(){
-    [ $2 ]  && file=$2 || file=$configfile.edit
-    egrep -e "^[[:blank:]]*$1:" $file
-}
-
-backuprestore(){
+backup_restore(){
     [ $2 ] && file=$2 || read -p 'Enter file: ' file
-    [ ! -f $file ] && backuprestore $1
+    [ ! -f $file ] && backup_restore $1
     backup(){
         cp $file "$file.bak"
     }
@@ -66,38 +28,101 @@ backuprestore(){
         *) echo "backup\nrestore";;
     esac
 }
+# Ensure there is a backup. Requires sudo privileges
+[ ! -e $netplan.bak ] && backup_restore backup $netplan
+[ ! -e $resolve.bak ] && backup_restore backup $resolve
 
-prepareconfigfile(){
-    [ -z $interface ] && selectinterface
-    cp $configfile.bak $configfile.edit
-    #header=$(egrep -e '^#' $configfile)
-    printf "$header\nnetwork:\n    version:$(getconfigvalue version | cut -f2 -d:)\n    renderer:$(getconfigvalue renderer | cut -f2 -d:)\n    ethernets:\n         $interface:\n            dhcp4:$(getconfigvalue dhcp4 | cut -f2 -d:)\n            addresses:$(getconfigvalue addresses | head -1 | cut -f2 -d:)\n            gateway4:$(getconfigvalue gateway | cut -f2 -d:)\n            nameservers:\n                addresses:$(getconfigvalue addresses | tail -1 | cut -f2 -d:)\n" > $configfile.edit
-    [ -z $renderer $dhcp4 $ipv4 $gateway4 $nameserver $domainname ] 2>/dev/null && getinterfaceinformation $interface
-    changeconfigfile renderer $renderer
-    changeconfigfile dhcp4 $dhcp4
-    changeconfigfile ipv4 $ipv4
-    changeconfigfile gateway4 $gateway4
-    changeconfigfile nameserver4 $nameserver4
+communicate(){
+    prompt(){
+        [ $dmenu ] && printf "$1" | dmenu -i -p "$2" || read -p "$1" $2
+    }
+
+    notify(){
+        [ $notifysend ] && notify-send "$1" || echo "$1"
+    }
+
+    case $1 in
+        prompt) prompt $2 $3;;
+        notify) notify $2 $3;;
+    esac
 }
 
-changeconfigfile(){
-    [ ! -f "$configfile.edit" ] && prepareconfigfile
+get_connected_interfaces(){
+    interfaces=$(ls /sys/class/net)
+}
+
+select_interface(){
+    [ -z $interfaces ] && get_connected_interfaces
+    echo 'AVAILABLE INTERFACES:'
+    echo "$interfaces"
+    read -p 'What interface do you want to configure? ' interface
+    [ $(echo $interface | grep -e "$interfaces") ] || select_interface
+}
+
+get_interface_information(){
+    [ -z $interface ] && select_interface
+    renderer=$(grep renderer $netplan | awk '{print $2}')
+    dhcp4=$(grep dhcp4 $netplan | awk '{print $2}')
+    [ ! $dhcp4 ] && dhcp4='no'
+    ipv4=$(ip address show dev $interface | grep -e 'inet ' | sed -E 's|[^[:digit:]]*(([[:digit:]]{1,3}\.){3}[[:digit:]]{1,3}/[[:digit:]]{1,2}).*|\1|')
+    gateway4=$(ip route show dev $interface | grep -e 'default via' | sed -E 's/[^[:digit:]]*(([[:digit:]]{1,3}\.){3}[[:digit:]]{1,3}).*/\1/' | head -1)
+    nameserver4=$(grep -e 'nameserver' /etc/resolv.conf | cut -f2 -d' ')
+    domainname=$(egrep -e "^([[:digit:]]{1,3}\.){3}[[:digit:]]{1,3}[^[:alpha:]]*$hostname\.?([[:alpha:]])?" /etc/hosts | cut -f5 -d. | awk '{print $2}')
+    [ ! $domainname ] && domainname='not set'
+}
+
+print_interface_information(){
+    [ $1 ] && interface=$1 && get_interface_information $interface
+    [ -z $renderer $dhcp4 $ipv4 $gateway4 $nameserver $domainname ] 2>/dev/null && get_interface_information
+    echo "Renderer: $renderer"
+    echo "DHCP: $dhcp4"
+    echo "IP: $ipv4"
+    echo "gateway: $gateway4"
+    echo "nameservers: $nameserver"
+    echo "domain: $domainname"
+}
+
+get_config_value(){
+    [ $2 ]  && file=$2 || file=$netplan
+    egrep -e "^[[:blank:]]*$1:" $file
+}
+
+prepare_netplan(){
+    [ -z $interface ] && select_interface
+    cp $netplan.bak $netplan
+    #header=$(egrep -e '^#' $netplan)
+    printf "$header\nnetwork:\n    version:$(get_config_value version | cut -f2 -d:)\n    renderer:$(get_config_value renderer | cut -f2 -d:)\n    ethernets:\n        $interface:\n            dhcp4:$(get_config_value dhcp4 | cut -f2 -d:)\n            addresses:$(get_config_value addresses | head -1 | cut -f2 -d:)\n            gateway4:$(get_config_value gateway | cut -f2 -d:)\n            nameservers:\n                addresses:$(get_config_value addresses | tail -1 | cut -f2 -d:)\n" > $netplan
+    [ -z $renderer $dhcp4 $ipv4 $gateway4 $nameserver $domainname ] 2>/dev/null && get_interface_information $interface
+    change_netplan renderer $renderer
+    change_netplan dhcp4 $dhcp4
+    change_netplan ipv4 $ipv4
+    change_netplan gateway4 $gateway4
+    change_netplan nameserver4 $nameserver4
+}
+
+change_netplan(){
+    [ ! -f "$netplan" ] && prepare_netplan
     renderer(){
         if [ $1 ]; then
             renderer=$1
         else
-            read -p 'Manage interfaces with either: 1) networkd or 2) NetworkManager [1,2] ' renderer
-            [ "$renderer" = '2' -o "$renderer" = 'NetworkManager' ] && renderer='NetworkManager' || renderer='networkd'
+            if [ $networkmanager ]; then
+                read -p 'Manage interfaces with either: 1) networkd or 2) NetworkManager [1,2] ' renderer
+                [ "$renderer" = '2' -o "$renderer" = 'NetworkManager' ] && renderer='NetworkManager' || renderer='networkd'
+            else
+                renderer='networkd'
+            fi
         fi
-        sed -Ei "/$(getconfigvalue renderer)/s/:(.*)?$/: $renderer/" $configfile.edit
+        sed -Ei "/$(get_config_value renderer)/s/:(.*)?$/: $renderer/" $netplan
     }
     dhcp4(){
         if [ $1 ]; then
             dhcp4=$1
         else
             read -p 'Manage interface via DHCP? [y/N] ' dhcp4
+            [ "$dhcp4" = 'y' -o "$dhcp4" = 'Y' -o "$dhcp4" = 'yes' -o "$dhcp4" = 'Yes' ] && dhcp4='true' || dhcp4='false'
         fi
-        sed -Ei "/$(getconfigvalue dhcp4)/s/:(.*)?$/: $dhcp4/" $configfile.edit
+        sed -Ei "/$(get_config_value dhcp4)/s/:(.*)?$/: $dhcp4/" $netplan
     }
     ipv4(){
         if [ $1 ]; then
@@ -105,31 +130,31 @@ changeconfigfile(){
         else
             read -p 'Please enter a valid IPv4 address for address: ' ipv4
             read -p 'Please enter a valid CIDR address for subnet: ' cidr
-            [ $(echo "$ipv4/$cidr" | egrep -e '([[:digit:]]{1,3}\.){3}[[:digit:]]{1,3}/[[:digit:]]{1,2}') ] && ipv4="$ipv4/$cidr" || changeconfigfile ipv4
+            [ $(echo "$ipv4/$cidr" | egrep -e '([[:digit:]]{1,3}\.){3}[[:digit:]]{1,3}/[[:digit:]]{1,2}') ] && ipv4="$ipv4/$cidr" || change_netplan ipv4
         fi
         tmp=$ipv4
         ipv4=$(echo $tmp | sed 's|/| |')
-        sed -Ei "1,/addresses/s/(addresses:)(.*)?$/\1 \[$ipv4\]/" $configfile.edit
+        sed -Ei "1,/addresses/s/(addresses:)(.*)?$/\1 \[$ipv4\]/" $netplan
         ipv4=$tmp
-        sed -Ei "s/(([[:digit:]]{1,3}\.){3}[[:digit:]]{1,3}) ([[:digit:]]{1,2})/\1\/\3/" $configfile.edit
+        sed -Ei "s/(([[:digit:]]{1,3}\.){3}[[:digit:]]{1,3}) ([[:digit:]]{1,2})/\1\/\3/" $netplan
     }
     gateway4(){
         if [ $1 ]; then
             gateway4=$1
         else
             read -p 'Please enter a valid IPv4 address for gateway: ' gateway4
-            [ $(echo "$gateway4" | egrep -e '([[:digit:]]{1,3}\.){3}[[:digit:]]{1,3}') ] || changeconfigfile gateway4
+            [ $(echo "$gateway4" | egrep -e '([[:digit:]]{1,3}\.){3}[[:digit:]]{1,3}') ] || change_netplan gateway4
         fi
-        sed -Ei "/$(getconfigvalue gateway4)/s/:(.*)?$/: $gateway4/" $configfile.edit
+        sed -Ei "/$(get_config_value gateway4)/s/:(.*)?$/: $gateway4/" $netplan
     }
     nameserver4(){
         if [ $1 ]; then
             nameserver4=$1
         else
             read -p 'Please enter a valid IPv4 address for nameserver. You can enter two entries by separating entries with a comma (e.g. ?.?.?.?,?.?.?.?) ' nameserver4
-            [ $(echo "$nameserver4" | egrep -e '(([[:digit:]]{1,3}\.){3}[[:digit:]]{1,3},?){1,2}') ] || changeconfigfile nameserver4
+            [ $(echo "$nameserver4" | egrep -e '(([[:digit:]]{1,3}\.){3}[[:digit:]]{1,3},?){1,2}') ] || change_netplan nameserver4
         fi
-        sed -Ei "$ s|(addresses:)(.*)?$|\1 [$nameserver4]|" $configfile.edit
+        sed -Ei "$ s|(addresses:)(.*)?$|\1 [$nameserver4]|" $netplan
         #sed -Ei "s/(DNS=)/\1$namderver4/" /etc/systemd/resolved.conf
     }
 
@@ -139,21 +164,20 @@ changeconfigfile(){
         ipv4) ipv4 $2;;
         gateway4) gateway4 $2;;
         nameserver4) nameserver4 $2;;
-        *) echo "renderer,dhcp4,ipv4,gateway4,nameserver4";;
+        *) echo "renderer/dhcp4/ipv4/gateway4/nameserver4";;
     esac
 }
 
-verifyconfig(){
-    cp $configfile.edit $configfile
+verify_config(){
     netplan apply
 }
 
 case $1 in
-    select) selectinterface;;
-    print) printinterfaceinformation $2;;
-    version) backuprestore $2 $3;;
-    prepare) [ $2 ] && interface=$2 && prepareconfigfile $interface;;
-    change) changeconfigfile $2;;
-    verify) verifyconfig;;
-    *) cat $configfile.edit;;
+    select) select_interface;;
+    print) print_interface_information $2;;
+    version) backup_restore $2 $3;;
+    prepare) [ $2 ] && interface=$2 && prepare_netplan $interface;;
+    change) change_netplan $2;;
+    verify) verify_config;;
+    *) cat $netplan;;
 esac
