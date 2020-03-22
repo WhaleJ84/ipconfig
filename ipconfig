@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-set -x
+#set -x
 
 # Ensure the user is running with superuser privileges
 [ $(id -u) != 0 ] && echo 'This script must be run with superuser privileges.' && exit 0
@@ -28,11 +28,16 @@ backup_restore(){
         cp "$file.bak" $file
     }
 
-    case $1 in
+backup_options="backup\\nrestore\\nback"
+while [ "$backup_option" != 'back' ]; do
+backup_option=$(communicate prompt 'Available operations' "$backup_options" 'backup_option')
+    case $backup_option in
         backup) get_file "$2" && backup $file ;;
         restore) get_file "$2" && restore $file ;;
-        *) communicate notify "backup\nrestore" ;;
+        back) ;;
+        *) communicate notify "backup\nrestore\nback" ;;
     esac
+done
 }
 # Ensure there is a backup. Requires sudo privileges
 [ ! -e $netplan.bak ] && backup_restore backup $netplan
@@ -112,7 +117,7 @@ get_config_value(){
 prepare_netplan(){
     [ -z $interface ] && select_interface
     cp $netplan.bak $netplan
-    #header=$(egrep -e '^#' $netplan)
+    header=$(egrep -e '^#' $netplan)
     printf "$header\nnetwork:\n    version:$(get_config_value version | cut -f2 -d:)\n    renderer:$(get_config_value renderer | cut -f2 -d:)\n    ethernets:\n        $interface:\n            dhcp4:$(get_config_value dhcp4 | cut -f2 -d:)\n            addresses:$(get_config_value addresses | head -1 | cut -f2 -d:)\n            gateway4:$(get_config_value gateway | cut -f2 -d:)\n            nameservers:\n                addresses:$(get_config_value addresses | tail -1 | cut -f2 -d:)\n" > $netplan
     [ -z $renderer $dhcp4 $ipv4 $gateway4 $nameserver $domainname ] 2>/dev/null && get_interface_information $interface
     change_netplan renderer $renderer
@@ -120,6 +125,7 @@ prepare_netplan(){
     change_netplan ipv4 $ipv4
     change_netplan gateway4 $gateway4
     change_netplan nameserver4 $nameserver4
+    change_netplan back
 }
 
 change_netplan(){
@@ -165,7 +171,6 @@ change_netplan(){
             gateway4=$1
         else
             gateway4=$(communicate prompt 'Please enter a valid IPv4 address' '' 'gateway4')
-            #read -p 'Please enter a valid IPv4 address for gateway: ' gateway4
             [ $(echo "$gateway4" | egrep -e '([[:digit:]]{1,3}\.){3}[[:digit:]]{1,3}') ] || change_netplan gateway4
         fi
         sed -Ei "/$(get_config_value gateway4)/s/:(.*)?$/: $gateway4/" $netplan
@@ -181,33 +186,40 @@ change_netplan(){
         #sed -Ei "s/(DNS=)/\1$nameserver4/" /etc/systemd/resolved.conf
     }
 
-    case $1 in
+change_options="renderer\\ndhcp4\\nipv4\\ngateway4\\nnameserver4\\nall\\nback"
+
+while [ "$change_option" != 'back' ]; do
+    change_option=$(communicate prompt 'Available options' "$change_options" 'change_option')
+    case $change_option in
         renderer) renderer $2;;
         dhcp4) dhcp4 $2;;
         ipv4) ipv4 $2;;
         gateway4) gateway4 $2;;
         nameserver4) nameserver4 $2;;
         all) renderer && dhcp4 && ipv4 && gateway4 && nameserver4;;
-        *) communicate notify "renderer\ndhcp4\nipv4\ngateway4\nnameserver4\nall";;
+        back) change_option="back" ;;
+        *) communicate notify "renderer\ndhcp4\nipv4\ngateway4\nnameserver4\nall" && change_option='back' ;;
     esac
+done
 }
 
 verify_config(){
     netplan apply
 }
 
-debug(){
-    validate_input alpha
-}
-
-case $1 in
-    select) select_interface;;
-    print) print_interface_information $2;;
-    version) backup_restore $2 $3;;
-    prepare) [ $2 ] && interface=$2 && prepare_netplan $interface || select_interface && prepare_netplan $interface;;
-    change) change_netplan $2;;
-    verify) verify_config;;
-    debug) debug $1;;
-    *) cat $netplan;;
-esac
-set +x
+ip_options="select\\nprint\\nversion\\nprepare\\nchange\\nview\\ncommit\\nexit"
+while [ "$ip_option" != 'commit' ]; do
+    ip_option=$(communicate prompt 'Available operations' "$ip_options" 'ip_option')
+    case $ip_option in
+        select) select_interface ;;
+        print) print_interface_information $2 ;;
+        version) backup_restore $2 $3 ;;
+        prepare) [ $2 ] && interface=$2 && prepare_netplan $interface || select_interface && prepare_netplan $interface ;;
+        change) change_netplan $2 ;;
+        view) view $netplan ;;
+        commit) verify_config ;;
+        exit) exit 0 ;;
+        *) communicate notify "$ip_options" ;;
+    esac
+done
+#set +x
