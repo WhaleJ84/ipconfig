@@ -1,4 +1,5 @@
 #!/usr/bin/env sh
+set -x
 
 # Ensure the user is running with superuser privileges
 [ $(id -u) != 0 ] && echo 'This script must be run with superuser privileges.' && exit 0
@@ -12,9 +13,12 @@ hostname=$(cat /etc/hostname)
 [ $(command -v NetworkManager 2>/dev/null) ] && networkmanager='true'
 [ $(command -v dmenu 2>/dev/null) ] && dmenu='true'
 [ $(command -v notify-send 2>/dev/null) ] && notifysend='true'
+unset dmenu # FOR DEBUG PURPOSES
+unset notifysend # FOR DEBUG PURPOSES
 
 backup_restore(){
-    [ $2 ] && file=$2 || read -p 'Enter file: ' file
+    #[ $2 ] && file=$2 || read -p 'Enter file: ' file
+    [ $2 ] && file=$2 || file=$(communicate prompt 'Enter file:' '' "file")
     [ ! -f $file ] && backup_restore $1
     backup(){
         cp $file "$file.bak"
@@ -25,16 +29,40 @@ backup_restore(){
     case $1 in
         backup) backup $2;;
         restore) restore $2;;
-        *) echo "backup\nrestore";;
+        *) communicate notify "backup\nrestore";;
     esac
 }
 # Ensure there is a backup. Requires sudo privileges
 [ ! -e $netplan.bak ] && backup_restore backup $netplan
 [ ! -e $resolve.bak ] && backup_restore backup $resolve
 
+validate_input(){
+    [ -z $2 ] && echo 'No input' || input="$2"
+    alpha(){
+        output=$(echo "$input" | sed 's/[^[:alpha:] ]//g' | tr '[:upper:]' '[:lower:]')
+        echo "$output"
+    }
+    #num(){
+        ##
+    #}
+    #alnum(){
+        ##
+    #}
+
+    case $1 in
+        alpha) alpha $2;;
+    esac
+}
+
 communicate(){
     prompt(){
-        [ $dmenu ] && printf "$1" | dmenu -i -p "$2" || read -p "$1" $2
+        description="$1"; options="$2"; outcome="$3"
+        ### TODO: FIX DMENU IMPLEMENTATION
+        if [ $dmenu ]; then
+            validate_input alpha $(printf "$options" | dmenu -i -p "$description")
+        else
+            read -p "$description [$options] " outcome; echo $outcome
+        fi
     }
 
     notify(){
@@ -42,21 +70,19 @@ communicate(){
     }
 
     case $1 in
-        prompt) prompt $2 $3;;
-        notify) notify $2 $3;;
+        prompt) prompt "$2" "$3" "$4";;
+        notify) notify "$2";;
     esac
 }
 
 get_connected_interfaces(){
-    interfaces=$(ls /sys/class/net)
+    [ $dmenu ] && interfaces=$(ls /sys/class/net | awk 'BEGIN { ORS=" " }; {print $1}' | sed 's/ /\\n/g') || interfaces=$(ls /sys/class/net)
 }
 
 select_interface(){
     [ -z $interfaces ] && get_connected_interfaces
-    echo 'AVAILABLE INTERFACES:'
-    echo "$interfaces"
-    read -p 'What interface do you want to configure? ' interface
-    [ $(echo $interface | grep -e "$interfaces") ] || select_interface
+    interface=$(communicate prompt 'Select interface' $interfaces)
+    [ $(ls /sys/class/net | grep -e "$interface") ] || select_interface
 }
 
 get_interface_information(){
@@ -74,12 +100,12 @@ get_interface_information(){
 print_interface_information(){
     [ $1 ] && interface=$1 && get_interface_information $interface
     [ -z $renderer $dhcp4 $ipv4 $gateway4 $nameserver $domainname ] 2>/dev/null && get_interface_information
-    echo "Renderer: $renderer"
-    echo "DHCP: $dhcp4"
-    echo "IP: $ipv4"
-    echo "gateway: $gateway4"
-    echo "nameservers: $nameserver"
-    echo "domain: $domainname"
+    communicate notify "Renderer: $renderer"
+    communicate notify "DHCP: $dhcp4"
+    communicate notify "IP: $ipv4"
+    communicate notify "gateway: $gateway4"
+    communicate notify "nameservers: $nameserver4"
+    communicate notify "domain: $domainname"
 }
 
 get_config_value(){
@@ -155,7 +181,7 @@ change_netplan(){
             [ $(echo "$nameserver4" | egrep -e '(([[:digit:]]{1,3}\.){3}[[:digit:]]{1,3},?){1,2}') ] || change_netplan nameserver4
         fi
         sed -Ei "$ s|(addresses:)(.*)?$|\1 [$nameserver4]|" $netplan
-        #sed -Ei "s/(DNS=)/\1$namderver4/" /etc/systemd/resolved.conf
+        #sed -Ei "s/(DNS=)/\1$nameserver4/" /etc/systemd/resolved.conf
     }
 
     case $1 in
@@ -164,12 +190,17 @@ change_netplan(){
         ipv4) ipv4 $2;;
         gateway4) gateway4 $2;;
         nameserver4) nameserver4 $2;;
-        *) echo "renderer/dhcp4/ipv4/gateway4/nameserver4";;
+        all) renderer && dhcp4 && ipv4 && gateway4 && nameserver4;;
+        *) communicate notify "renderer\ndhcp4\nipv4\ngateway4\nnameserver4\nall";;
     esac
 }
 
 verify_config(){
     netplan apply
+}
+
+debug(){
+    validate_input alpha
 }
 
 case $1 in
@@ -179,5 +210,7 @@ case $1 in
     prepare) [ $2 ] && interface=$2 && prepare_netplan $interface;;
     change) change_netplan $2;;
     verify) verify_config;;
+    debug) debug $1;;
     *) cat $netplan;;
 esac
+set +x
