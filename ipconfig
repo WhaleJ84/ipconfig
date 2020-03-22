@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-#set -x
+set -x
 
 # Ensure the user is running with superuser privileges
 [ $(id -u) != 0 ] && echo 'This script must be run with superuser privileges.' && exit 0
@@ -8,6 +8,7 @@ IPCIDR="([[:digit:]]{1,3}\.){3}[[:digit:]]{1,3}/[[:digit:]]{1,2}"
 # TODO: Ensure /etc/netplan is the correct dir for configs
 netplan=$(ls /etc/netplan/01-*.yaml)
 resolve=$(ls /etc/systemd/resolved.conf)
+files="$netplan\\n$resolve"
 hostname=$(cat /etc/hostname)
 # Check for installed programs
 [ $(command -v NetworkManager 2>/dev/null) ] && networkmanager='true'
@@ -18,8 +19,9 @@ hostname=$(cat /etc/hostname)
 
 backup_restore(){
     get_file(){
-        [ $1 ] && file=$1 || file=$(communicate prompt 'Enter file:' '' "file")
-        [ ! -f $file ] && backup_restore $1
+        [ $1 ] && file=$1 || file=$(communicate prompt 'Enter file:' "$files\\nback" 'file')
+        [ "$file" = 'back' ] && backup_option='back' 2>/dev/null
+        [ ! -f $file ] && backup_restore $1 2>/dev/null
     }
     backup(){
         cp $file "$file.bak"
@@ -29,11 +31,12 @@ backup_restore(){
     }
 
 backup_options="backup\\nrestore\\nback"
+unset backup_option
 while [ "$backup_option" != 'back' ]; do
 backup_option=$(communicate prompt 'Available operations' "$backup_options" 'backup_option')
     case $backup_option in
-        backup) get_file "$2" && backup $file ;;
-        restore) get_file "$2" && restore $file ;;
+        backup) get_file "$2" && backup $file 2>/dev/null ;;
+        restore) get_file "$2" && restore $file 2>/dev/null ;;
         back) ;;
         *) communicate notify "backup\nrestore\nback" ;;
     esac
@@ -120,12 +123,11 @@ prepare_netplan(){
     header=$(egrep -e '^#' $netplan)
     printf "$header\nnetwork:\n    version:$(get_config_value version | cut -f2 -d:)\n    renderer:$(get_config_value renderer | cut -f2 -d:)\n    ethernets:\n        $interface:\n            dhcp4:$(get_config_value dhcp4 | cut -f2 -d:)\n            addresses:$(get_config_value addresses | head -1 | cut -f2 -d:)\n            gateway4:$(get_config_value gateway | cut -f2 -d:)\n            nameservers:\n                addresses:$(get_config_value addresses | tail -1 | cut -f2 -d:)\n" > $netplan
     [ -z $renderer $dhcp4 $ipv4 $gateway4 $nameserver $domainname ] 2>/dev/null && get_interface_information $interface
-    change_netplan renderer $renderer
-    change_netplan dhcp4 $dhcp4
-    change_netplan ipv4 $ipv4
-    change_netplan gateway4 $gateway4
-    change_netplan nameserver4 $nameserver4
-    change_netplan back
+    #change_netplan renderer $renderer
+    #change_netplan dhcp4 $dhcp4
+    #change_netplan ipv4 $ipv4
+    #change_netplan gateway4 $gateway4
+    #change_netplan nameserver4 $nameserver4
 }
 
 change_netplan(){
@@ -136,7 +138,7 @@ change_netplan(){
         else
             if [ $networkmanager ]; then
                 renderer=$(communicate prompt 'Select renderer' "networkd\\nNetworkManager" 'renderer')
-                [ "$renderer" = '2' -o "$renderer" = 'NetworkManager' ] && renderer='NetworkManager' || renderer='networkd'
+                [ "$renderer" = 'networkmanager' ] && renderer='NetworkManager' || renderer='networkd'
             else
                 renderer='networkd'
             fi
@@ -182,12 +184,13 @@ change_netplan(){
             nameserver4=$(communicate prompt 'Enter IPv4 nameserver(s)' '(e.g. ?.?.?.?,?.?.?.?)' 'nameserver4')
             [ $(echo "$nameserver4" | egrep -e '(([[:digit:]]{1,3}\.){3}[[:digit:]]{1,3},?){1,2}') ] || change_netplan nameserver4
         fi
+        # Includes in $netplan for logging purposes only
         sed -Ei "$ s|(addresses:)(.*)?$|\1 [$nameserver4]|" $netplan
-        #sed -Ei "s/(DNS=)/\1$nameserver4/" /etc/systemd/resolved.conf
+        sed -Ei "s/(DNS=)/\1$nameserver4/" $resolve
     }
 
 change_options="renderer\\ndhcp4\\nipv4\\ngateway4\\nnameserver4\\nall\\nback"
-
+unset change_option
 while [ "$change_option" != 'back' ]; do
     change_option=$(communicate prompt 'Available options' "$change_options" 'change_option')
     case $change_option in
@@ -205,6 +208,7 @@ done
 
 verify_config(){
     netplan apply
+    service systemd-resolved restart
 }
 
 ip_options="select\\nprint\\nversion\\nprepare\\nchange\\nview\\ncommit\\nexit"
