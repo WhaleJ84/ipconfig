@@ -4,12 +4,14 @@
 # Ensure the user is running with superuser privileges
 [ "$(id -u)" != 0 ] && echo 'This script must be run with superuser privileges.' && exit 0
 
-#IPCIDR="([[:digit:]]{1,3}\.){3}[[:digit:]]{1,3}/[[:digit:]]{1,2}"
+#IPCIDR='([[:digit:]]{1,3}\.){3}[[:digit:]]{1,3}/[[:digit:]]{1,2}'
 # TODO: Ensure /etc/netplan is the correct dir for configs
 netplan=$(ls /etc/netplan/01-*.yaml)
+[ ! -f /etc/systemd/resolved.conf ] && cp /etc/systemd/resolved.conf.bak /etc/systemd/resolved.conf
 resolve=$(ls /etc/systemd/resolved.conf)
-files="$netplan\\n$resolve"
-hostname=$(cat /etc/hostname)
+files="$netplan
+$resolve"
+hostname=$(hostname -s)
 # Check for installed programs
 [ "$(command -v NetworkManager 2>/dev/null)" ] && networkmanager='true'
 [ "$(command -v dmenu 2>/dev/null)" ] && dmenu='true'
@@ -17,9 +19,39 @@ hostname=$(cat /etc/hostname)
 #unset dmenu # FOR DEBUG PURPOSES
 #unset notifysend # FOR DEBUG PURPOSES
 
+validate_input(){
+    [ -z "$2" ] && echo 'No input' || input="$2"
+    output=$(echo "$input" | sed 's/[^[:alpha:][:digit:] ,.]//g' | tr '[:upper:]' '[:lower:]')
+    echo "$output"
+}
+
+communicate(){
+    prompt(){
+        description="$1"
+        options="$2"
+        if [ $dmenu ]; then
+            printf "%s\n" $options | dmenu -i -p "${description}"
+        else
+            [ -n "$options" ] && optstring="options: ${options}" || optstring=''
+            read -p "${optstring}${description}: " outcome
+            echo $outcome
+        fi
+    }
+
+    notify(){
+        [ $notifysend ] && notify-send "$1" || echo "$1"
+    }
+
+    case $1 in
+        prompt) prompt "$2" "$3";;
+        notify) notify "$2";;
+    esac
+}
+
 backup_restore(){
     get_file(){
-        [ "$1" ] && file=$1 || file=$(communicate prompt 'Enter file:' "$files\\nback" 'file')
+        [ "$1" ] && file=$1 || file=$(communicate prompt 'Enter file' "$files
+back")
         [ "$file" = 'back' ] && backup_option='back' 2>/dev/null
         [ ! -f "$file" ] && backup_restore "$1" 2>/dev/null
     }
@@ -30,62 +62,28 @@ backup_restore(){
         cp "$file.bak" "$file"
     }
 
-backup_options="backup\\nrestore\\nback"
-unset backup_option
-while [ "$backup_option" != 'back' ]; do
-backup_option=$(communicate prompt 'Available operations' "$backup_options" 'backup_option')
-    case $backup_option in
-        backup) get_file "$2" && backup "$file" 2>/dev/null ;;
-        restore) get_file "$2" && restore "$file" 2>/dev/null ;;
-        back) ;;
-        *) communicate notify "backup\nrestore\nback" ;;
-    esac
-done
+    backup_options='backup
+restore
+back'
+    unset backup_option
+    while [ "$backup_option" != 'back' ]; do
+        backup_option=$(communicate prompt 'Available operations' "$backup_options")
+        case $backup_option in
+            backup) get_file "$2" && backup "$file" 2>/dev/null ;;
+            restore) get_file "$2" && restore "$file" 2>/dev/null ;;
+            back) ;;
+            *) communicate notify 'backup
+restore
+back' ;;
+        esac
+    done
 }
 # Ensure there is a backup. Requires sudo privileges
 [ ! -e "$netplan.bak" ] && backup_restore backup "$netplan"
 [ ! -e "$resolve.bak" ] && backup_restore backup "$resolve"
 
-validate_input(){
-    [ -z "$2" ] && echo 'No input' || input="$2"
-    alnum(){
-        output=$(echo "$input" | sed 's/[^[:alpha:][:digit:] ,.]//g' | tr '[:upper:]' '[:lower:]')
-        echo "$output"
-    }
-
-    case $1 in
-        alnum) alnum "$2";;
-    esac
-}
-
-communicate(){
-    prompt(){
-        description="$1"; options="$2"; outcome="$3"
-        [ ! $dmenu ] && options=$(echo "$options" | sed 's/\n/ /g')
-        if [ $dmenu ]; then
-            validate_input alnum $(printf "$options" | dmenu -i -p "$description")
-        else
-            read -p "$description [$options] " outcome; echo $outcome
-        fi
-    }
-
-    notify(){
-        [ $notifysend ] && notify-send "$1" || echo "$1"
-    }
-
-    case $1 in
-        prompt) prompt "$2" "$3" "$4";;
-        notify) notify "$2";;
-    esac
-}
-
-get_connected_interfaces(){
-    [ $dmenu ] && interfaces=$(ls /sys/class/net | awk 'BEGIN { ORS=" " }; {print $1}' | sed 's/ /\\n/g') || interfaces=$(ls /sys/class/net)
-}
-
 select_interface(){
-    [ -z "$interfaces" ] && get_connected_interfaces
-    interface=$(communicate prompt 'Select interface' "$interfaces" 'interface')
+    interface=$(communicate prompt 'Select interface' "$(ls /sys/class/net)")
     [ "$(ls /sys/class/net | grep -e "$interface")" ] || select_interface
 }
 
@@ -96,8 +94,9 @@ get_interface_information(){
     [ ! "$dhcp4" ] && dhcp4='no'
     ipv4=$(ip address show dev "$interface" | grep -e 'inet ' | sed -E 's|[^[:digit:]]*(([[:digit:]]{1,3}\.){3}[[:digit:]]{1,3}/[[:digit:]]{1,2}).*|\1|')
     gateway4=$(ip route show dev "$interface" | grep -e 'default via' | sed -E 's/[^[:digit:]]*(([[:digit:]]{1,3}\.){3}[[:digit:]]{1,3}).*/\1/' | head -1)
-    nameserver4=$(grep -e 'nameserver' /etc/resolv.conf | cut -f2 -d' ')
-    domainname=$(grep -E -e "^([[:digit:]]{1,3}\.){3}[[:digit:]]{1,3}[^[:alpha:]]*$hostname\.?([[:alpha:]])?" /etc/hosts | cut -f5 -d. | awk '{print $2}')
+    nameserver4=$(grep -e '^DNS' /etc/systemd/resolved.conf | cut -f2 -d=)
+    [ -z "$nameserver4" ] && nameserver4=$(grep -e 'nameserver' /etc/resolv.conf | cut -f2 -d' ')
+    domainname=$(hostname -d)
     [ ! "$domainname" ] && domainname='not set'
 }
 
@@ -110,11 +109,6 @@ IP: $ipv4
 gateway: $gateway4
 nameservers: $nameserver4
 domain: $domainname"
-}
-
-get_config_value(){
-    [ "$2" ]  && file=$2 || file=$netplan
-    grep -E -e "^[[:blank:]]*$1:" "$file"
 }
 
 prepare_netplan(){
@@ -130,6 +124,11 @@ prepare_netplan(){
     #change_netplan nameserver4 $nameserver4
 }
 
+get_config_value(){
+    [ "$2" ]  && file=$2 || file=$netplan
+    grep -E -e "^[[:blank:]]*$1:" "$file"
+}
+
 change_netplan(){
     [ ! -f "$netplan" ] && prepare_netplan
     renderer(){
@@ -137,7 +136,8 @@ change_netplan(){
             renderer=$1
         else
             if [ $networkmanager ]; then
-                renderer=$(communicate prompt 'Select renderer' "networkd\\nNetworkManager" 'renderer')
+                renderer=$(communicate prompt 'Select renderer' 'networkd
+NetworkManager')
                 [ "$renderer" = 'networkmanager' ] && renderer='NetworkManager' || renderer='networkd'
             else
                 renderer='networkd'
@@ -149,7 +149,8 @@ change_netplan(){
         if [ "$1" ]; then
             dhcp4=$1
         else
-            dhcp4=$(communicate prompt 'Manage interface via DHCP? (Y/n)' "yes\\nno" 'dhcp4')
+            dhcp4=$(communicate prompt 'Manage interface via DHCP? (Y/n)' 'yes
+no')
             [ "$dhcp4" = 'n' -o "$dhcp4" = 'no' ] && dhcp4='false' || dhcp4='true'
         fi
         sed -Ei "/$(get_config_value dhcp4)/s/:(.*)?$/: $dhcp4/" "$netplan"
@@ -158,8 +159,8 @@ change_netplan(){
         if [ "$1" ]; then
             ipv4=$1
         else
-            ipv4=$(communicate prompt 'Enter IPv4 address' '' 'ipv4')
-            cidr=$(communicate prompt 'Enter CIDR subnet' '' 'cidr')
+            ipv4=$(communicate prompt 'Enter IPv4 address' '')
+            cidr=$(communicate prompt 'Enter CIDR subnet' '')
             [ $(echo "$ipv4/$cidr" | grep -E -e '([[:digit:]]{1,3}\.){3}[[:digit:]]{1,3}/[[:digit:]]{1,2}') ] && ipv4="$ipv4/$cidr" || change_netplan ipv4
         fi
         tmp=$ipv4
@@ -172,7 +173,7 @@ change_netplan(){
         if [ "$1" ]; then
             gateway4=$1
         else
-            gateway4=$(communicate prompt 'Enter IPv4 gateway' '' 'gateway4')
+            gateway4=$(communicate prompt 'Enter IPv4 gateway' '')
             [ $(echo "$gateway4" | egrep -e '([[:digit:]]{1,3}\.){3}[[:digit:]]{1,3}') ] || change_netplan gateway4
         fi
         sed -Ei "/$(get_config_value gateway4)/s/:(.*)?$/: $gateway4/" "$netplan"
@@ -181,50 +182,83 @@ change_netplan(){
         if [ "$1" ]; then
             nameserver4=$1
         else
-            nameserver4=$(communicate prompt 'Enter IPv4 nameserver(s)' '(e.g. ?.?.?.?,?.?.?.?)' 'nameserver4')
+            nameserver4=$(communicate prompt 'Enter IPv4 nameserver(s) (e.g. ?.?.?.?,?.?.?.?)')
             [ $(echo "$nameserver4" | egrep -e '(([[:digit:]]{1,3}\.){3}[[:digit:]]{1,3},?){1,2}') ] || change_netplan nameserver4
         fi
         # Includes in $netplan for logging purposes only
         sed -Ei "$ s|(addresses:)(.*)?$|\1 [$nameserver4]|" "$netplan"
-        sed -Ei "s/(DNS=)/\1$nameserver4/" "$resolve"
+    }
+    domainname(){
+        if [ "$1" ]; then
+            domainname=$1
+        else
+            domainname=$(communicate prompt 'Enter domain name' '')
+        fi
+        #sed -Ei "" ""
     }
 
-change_options="renderer\\ndhcp4\\nipv4\\ngateway4\\nnameserver4\\nall\\nback"
-unset change_option
-while [ "$change_option" != 'back' ]; do
-    change_option=$(communicate prompt 'Available options' "$change_options" 'change_option')
-    case $change_option in
-        renderer) renderer "$2";;
-        dhcp4) dhcp4 "$2";;
-        ipv4) ipv4 "$2";;
-        gateway4) gateway4 "$2";;
-        nameserver4) nameserver4 "$2";;
-        all) renderer && dhcp4 && ipv4 && gateway4 && nameserver4;;
-        back) change_option="back" ;;
-        *) communicate notify "renderer\ndhcp4\nipv4\ngateway4\nnameserver4\nall" && change_option='back' ;;
-    esac
-done
+    change_options='renderer
+dhcp4
+ipv4
+gateway4
+nameserver4
+all
+back'
+    unset change_option
+    while [ "$change_option" != 'back' ]; do
+        change_option=$(communicate prompt 'Available options' "$change_options")
+        case $change_option in
+            renderer) renderer "$2";;
+            dhcp4) dhcp4 "$2";;
+            ipv4) ipv4 "$2";;
+            gateway4) gateway4 "$2";;
+            nameserver4) nameserver4 "$2";;
+            domainname) domainname "$2" ;;
+            back) change_option='back' ;;
+            *) communicate notify 'renderer
+dhcp4
+ipv4
+gateway4
+nameserver4
+domainname' && change_option='back' ;;
+        esac
+    done
 }
 
 verify_config(){
     netplan apply
+    sed -Ei "s/^#?(DNS=)(.*)$/\1$(echo $nameserver4 | cut -d, -f1)/" "$resolve"
+    sed -Ei "s/^#?(FallbackDNS=)(.*)$/\1$(echo $nameserver4 | cut -d, -f2)/" "$resolve"
+    [ $(echo $nameserver4 | cut -d, -f2) = $(echo $nameserver4 | cut -d, -f1) ] && sed -Ei 's/^#?(FallbackDNS=)(.*)$/#\1/' "$resolve"
+    sed -Ei 's/^(FallbackDNS=)$/#\1/; s/^(DNS=)$/#\1/' "$resolve"
     service systemd-resolved restart
 }
 
-#ip_options="select\\ncurrent\\nfiles\\nprepare\\nconfigure\\nchanged\\ncommit\\nexit"
-ip_options="current\\nconfigure\\nchanged\\ncommit\\nexit"
+ip_options='select
+current
+files
+prepare
+configure
+changed
+commit
+exit'
+#ip_options='current
+#configure
+#changed
+#commit
+#exit'
 while [ "$ip_option" != 'commit' ]; do
-    ip_option=$(communicate prompt 'Available operations' "$ip_options" 'ip_option')
+    ip_option=$(communicate prompt 'Available operations' "$ip_options")
     case $ip_option in
         select) select_interface ;;
-        current) print_interface_information "$2" ;;
-        files) backup_restore "$2" "$3" ;;
-        prepare) [ "$2" ] && interface=$2 && prepare_netplan "$interface" || select_interface && prepare_netplan "$interface" ;;
-        configure) change_netplan "$2" ;;
-        changed) communicate notify "$(cat $netplan)" ;;
-        commit) verify_config ;;
-        exit) exit 0 ;;
-        *) communicate notify "$ip_options" ;;
-    esac
-done
+            current) print_interface_information "$2" ;;
+            files) backup_restore "$2" "$3" ;;
+            prepare) [ "$2" ] && interface=$2 && prepare_netplan "$interface" || select_interface && prepare_netplan "$interface" ;;
+            configure) change_netplan "$2" ;;
+            changed) communicate notify "$(cat $netplan)" ;;
+            commit) verify_config ;;
+            exit) exit 0 ;;
+            *) communicate notify "$ip_options" ;;
+        esac
+    done
 #set +x
