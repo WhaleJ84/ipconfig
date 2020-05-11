@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-#set -x
+set -x
 
 # Ensure the user is running with superuser privileges
 [ "$(id -u)" != 0 ] && echo 'This script must be run with superuser privileges.' && exit 0
@@ -12,12 +12,6 @@ resolve=$(ls /etc/systemd/resolved.conf)
 files="$netplan
 $resolve"
 hostname=$(hostname -s)
-# Check for installed programs
-[ "$(command -v NetworkManager 2>/dev/null)" ] && networkmanager='true'
-[ "$(command -v dmenu 2>/dev/null)" ] && dmenu='true'
-[ "$(command -v notify-send 2>/dev/null)" ] && notifysend='true'
-#unset dmenu # FOR DEBUG PURPOSES
-#unset notifysend # FOR DEBUG PURPOSES
 
 validate_input(){
     [ -z "$2" ] && echo 'No input' || input="$2"
@@ -25,6 +19,10 @@ validate_input(){
     echo "$output"
 }
 
+[ "$(command -v dmenu 2>/dev/null)" ] && dmenu='true'
+[ "$(command -v notify-send 2>/dev/null)" ] && notifysend='true'
+#unset dmenu # FOR DEBUG PURPOSES
+#unset notifysend # FOR DEBUG PURPOSES
 communicate(){
     prompt(){
         description="$1"
@@ -117,11 +115,6 @@ prepare_netplan(){
     header=$(grep -E -e '^#' "$netplan")
     printf "$header\nnetwork:\n    version:$(get_config_value version | cut -f2 -d:)\n    renderer:$(get_config_value renderer | cut -f2 -d:)\n    ethernets:\n        $interface:\n            dhcp4:$(get_config_value dhcp4 | cut -f2 -d:)\n            addresses:$(get_config_value addresses | head -1 | cut -f2 -d:)\n            gateway4:$(get_config_value gateway | cut -f2 -d:)\n            nameservers:\n                addresses:$(get_config_value addresses | tail -1 | cut -f2 -d:)\n" > "$netplan"
     [ -z $renderer $dhcp4 $ipv4 $gateway4 $nameserver $domainname ] 2>/dev/null && get_interface_information "$interface"
-    #change_netplan renderer $renderer
-    #change_netplan dhcp4 $dhcp4
-    #change_netplan ipv4 $ipv4
-    #change_netplan gateway4 $gateway4
-    #change_netplan nameserver4 $nameserver4
 }
 
 get_config_value(){
@@ -129,8 +122,9 @@ get_config_value(){
     grep -E -e "^[[:blank:]]*$1:" "$file"
 }
 
+[ "$(command -v NetworkManager 2>/dev/null)" ] && networkmanager='true'
 change_netplan(){
-    [ ! -f "$netplan" ] && prepare_netplan
+    prepare_netplan
     renderer(){
         if [ "$1" ]; then
             renderer=$1
@@ -159,8 +153,8 @@ no')
         if [ "$1" ]; then
             ipv4=$1
         else
-            ipv4=$(communicate prompt 'Enter IPv4 address' '')
-            cidr=$(communicate prompt 'Enter CIDR subnet' '')
+            ipv4=$(communicate prompt 'Enter IPv4 address')
+            cidr=$(communicate prompt 'Enter CIDR subnet')
             [ $(echo "$ipv4/$cidr" | grep -E -e '([[:digit:]]{1,3}\.){3}[[:digit:]]{1,3}/[[:digit:]]{1,2}') ] && ipv4="$ipv4/$cidr" || change_netplan ipv4
         fi
         tmp=$ipv4
@@ -173,7 +167,7 @@ no')
         if [ "$1" ]; then
             gateway4=$1
         else
-            gateway4=$(communicate prompt 'Enter IPv4 gateway' '')
+            gateway4=$(communicate prompt 'Enter IPv4 gateway')
             [ $(echo "$gateway4" | egrep -e '([[:digit:]]{1,3}\.){3}[[:digit:]]{1,3}') ] || change_netplan gateway4
         fi
         sed -Ei "/$(get_config_value gateway4)/s/:(.*)?$/: $gateway4/" "$netplan"
@@ -192,7 +186,7 @@ no')
         if [ "$1" ]; then
             domainname=$1
         else
-            domainname=$(communicate prompt 'Enter domain name' '')
+            domainname=$(communicate prompt 'Enter domain name')
         fi
         #sed -Ei "" ""
     }
@@ -202,6 +196,7 @@ dhcp4
 ipv4
 gateway4
 nameserver4
+domainname
 all
 back'
     unset change_option
@@ -234,19 +229,19 @@ verify_config(){
     service systemd-resolved restart
 }
 
-ip_options='select
-current
-files
-prepare
-configure
-changed
-commit
-exit'
-#ip_options='current
+#ip_options='select
+#current
+#files
+#prepare
 #configure
 #changed
 #commit
 #exit'
+ip_options='current
+configure
+changed
+commit
+exit'
 while [ "$ip_option" != 'commit' ]; do
     ip_option=$(communicate prompt 'Available operations' "$ip_options")
     case $ip_option in
@@ -261,4 +256,4 @@ while [ "$ip_option" != 'commit' ]; do
             *) communicate notify "$ip_options" ;;
         esac
     done
-#set +x
+set +x
